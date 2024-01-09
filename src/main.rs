@@ -5,6 +5,7 @@ use ark_ec::short_weierstrass::Affine;
 use ark_ff::{MontFp, QuadExtConfig};
 use ark_std::UniformRand;
 use num_bigint::ToBigInt;
+use num_traits::Zero;
 use plonky2::field::extension::Extendable;
 // use plonky2::field::types::Field;
 use plonky2::hash::hash_types::RichField;
@@ -168,7 +169,7 @@ fn main() {
 fn verify<F: RichField+ Extendable<D>, const D: usize>(
     input: Vec<u64>,
     proof: Proof,
-) {
+)-> bool {
 
 
 
@@ -184,12 +185,12 @@ fn verify<F: RichField+ Extendable<D>, const D: usize>(
     }
 
     vk_x = vk_x.add(vk.ic[0]).into_affine();
-    ;
     
-    pairing_prod(proof.a.into_group().neg().into_affine(), proof.b, vk.alpha1, vk.beta2, vk_x, vk.gamma2, proof.c, vk.delta2);
+    
+    pairing_prod(proof.a.into_group().neg().into_affine(), proof.b, vk.alpha1, vk.beta2, vk_x, vk.gamma2, proof.c, vk.delta2)
     
 
-    println!("vk_x = {:?}", vk_x);
+    // printl/n!("vk_x = {:?}", vk_x);
 
 }
 
@@ -207,24 +208,19 @@ fn pairing_prod<>(a1: G1Affine, a2: G2Affine, b1: G1Affine, b2: G2Affine, c1: G1
     p2.push(c2);
     p2.push(d2);
     
-    true
+    pairing_check(p1, p2)
 }
 
 fn pairing_check(p1: Vec<G1Affine>, p2: Vec<G2Affine>) -> bool {
     // TODO
-    let elements = p1.len();
-    let input_size = elements * 6;
-    // let mut input = Vec::new()[input_size];
-    // for i in 0..elements {
-    //     input[i * 6 + 0] = p1[i].x();
-
-    // }
 
     let e1 = pairing(p1[0], p2[0]);
     let e2 = pairing(p1[1], p2[1]);
+    let e3 = pairing(p1[2], p2[2]);
+    let e4 = pairing(p1[3], p2[3]);
 
-    
-    true
+
+    e1.add(&e2).add(&e3).add(&e4).is_zero()
 }
 
 

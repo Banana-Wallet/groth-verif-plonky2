@@ -17,11 +17,13 @@ use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
 use plonky2::{
     field::{goldilocks_field::GoldilocksField, types::PrimeField64},
 };
+use plonky2_bn254::fields::debug_tools::print_ark_fq;
 use plonky2_ecdsa::curve::curve_types::Curve;
 use rayon::str;
 use core::num::ParseIntError;
 use std::char::from_digit;
-use std::ops::{Add, Neg};
+use std::fmt::Debug;
+use std::ops::{Add, Neg, Sub};
 // use pairing::G1Point;
 
 use ark_bn254::{Fq12, G1Affine, G2Affine, Config, Fq, fr};
@@ -32,6 +34,8 @@ use ark_ff::fields::Field;
 use itertools::Itertools;
 
 use plonky2_bn254_pairing::pairing::pairing;
+use plonky2_bn254_pairing::final_exp_native::final_exp_native;
+use plonky2_bn254_pairing::miller_loop_native::miller_loop_native;
 
 
 pub struct VerificationKey {
@@ -152,6 +156,68 @@ fn main() {
     println!("g2 = {:?}", g2);
 
 
+    let a = G1Affine::new(Fq::from(MontFp!("3010198690406615200373504922352659861758983907867017329644089018310584441462")), 
+                                        Fq::from(MontFp!("17861058253836152797273815394432013122766662423622084931972383889279925210507")));
+    let b = G2Affine::new(
+        Fq2::new(
+            MontFp!("2725019753478801796453339367788033689375851816420509565303521482350756874229"),
+
+            MontFp!("7273165102799931111715871471550377909735733521218303035754523677688038059653"),
+
+        ),
+        Fq2::new(
+            MontFp!("2512659008974376214222774206987427162027254181373325676825515531566330959255"),
+
+            MontFp!("957874124722006818841961785324909313781880061366718538693995380805373202866"),
+
+        )
+    );
+
+    let c = G1Affine::new(
+        Fq::from(MontFp!("4503322228978077916651710446042370109107355802721800704639343137502100212473")), 
+        Fq::from(MontFp!("6132642251294427119375180147349983541569387941788025780665104001559216576968"))
+    );
+
+    let d = G2Affine::new(
+        Fq2::new(
+            MontFp!("18029695676650738226693292988307914797657423701064905010927197838374790804409"),
+
+            MontFp!("14583779054894525174450323658765874724019480979794335525732096752006891875705"),
+
+        ),
+        Fq2::new(
+            MontFp!("2140229616977736810657479771656733941598412651537078903776637920509952744750"),
+
+            MontFp!("11474861747383700316476719153975578001603231366361248090558603872215261634898"),
+
+        )
+    );
+
+    let e = miller_loop_native(&b,&(a));
+    let f = miller_loop_native(&d,&c);
+    let g = e * f;
+    let h = final_exp_native(g);
+    print_ark_fq(h.coeffs[0], "h.coeffs[0]".to_string());
+    print_ark_fq(h.coeffs[1], "h.coeffs[1]".to_string());
+    print_ark_fq(h.coeffs[2], "h.coeffs[2]".to_string());
+    print_ark_fq(h.coeffs[3], "h.coeffs[3]".to_string());
+    print_ark_fq(h.coeffs[4], "h.coeffs[4]".to_string());
+    print_ark_fq(h.coeffs[5], "h.coeffs[5]".to_string());
+    println!("h = {:?}", h);
+
+    // println!("f = {:?}", f);
+    let Q = G2Affine::generator();
+    let P = G1Affine::generator();
+    let m = miller_loop_native(&Q, &P);
+    let r = final_exp_native(m);
+    print_ark_fq(r.coeffs[0], "r.coeffs[0]".to_string());
+
+    // println!("g = {:?}", g);
+
+    // println!("g zero = {:?}", g.is_zero());
+    // assert_eq!(e, f);
+    
+
 
     // println!("Fr = {:?}", Fq::from("21888242871839275222246405745257275088696311157297823662689037894645226208583"));
 
@@ -193,6 +259,8 @@ fn verify<F: RichField+ Extendable<D>, const D: usize>(
     // printl/n!("vk_x = {:?}", vk_x);
 
 }
+
+
 
 fn pairing_prod<>(a1: G1Affine, a2: G2Affine, b1: G1Affine, b2: G2Affine, c1: G1Affine, c2: G2Affine, d1: G1Affine, d2: G2Affine) -> bool {
     // let mut res = Fq12::one();

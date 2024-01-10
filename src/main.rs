@@ -2,10 +2,10 @@ use anyhow::Result;
 use ark_ec::pairing::Pairing;
 use ark_ec::{AffineRepr, CurveConfig, CurveGroup};
 use ark_ec::short_weierstrass::Affine;
-use ark_ff::{MontFp, QuadExtConfig};
+use ark_ff::{MontFp, QuadExtConfig, Fp};
 use ark_std::UniformRand;
 use num_bigint::ToBigInt;
-use num_traits::Zero;
+use num_traits::{Zero, One};
 use plonky2::field::extension::Extendable;
 // use plonky2::field::types::Field;
 use plonky2::hash::hash_types::RichField;
@@ -51,18 +51,6 @@ pub struct Proof {
     pub a: G1Affine,
     pub b: G2Affine,
     pub c: G1Affine
-}
-
-
-#[allow(non_snake_case)]
-pub fn inner_product(A: &[G1Affine], B: &[G2Affine]) -> Fq12 {
-    assert_eq!(A.len(), B.len());
-    let r_vec = A
-        .iter()
-        .zip(B.iter())
-        .map(|(a, b)| pairing(*a, *b))
-        .collect_vec();
-    r_vec.iter().fold(Fq12::ONE, |acc, x| acc * x)
 }
 
 fn get_verification_key() -> VerificationKey {
@@ -134,101 +122,10 @@ fn main() {
     // let prod = inner_product(&A, &B);
     // println!("prod = {:?}", prod);
 
-    let g1 = G1Affine::new(Fq::from(1), Fq::from(2));
-    println!("g1 point loaded");
-    let g2 = 
-        G2Affine::new(
-            Fq2::new(
-                MontFp!("10857046999023057135944570762232829481370756359578518086990519993285655852781"),
+    let g1 = G1Affine::generator();
+    let g2 = G2Affine::generator();
 
-                MontFp!("11559732032986387107991004021392285783925812861821192530917403151452391805634"),
-            ),
-            Fq2::new(
-                MontFp!("8495653923123431417604973247489272438418190587263600148770280649306958101930"),
-                MontFp!("4082367875863433681332203403145435568316851327593401208105741076214120093531"),
-
-            )
-        );
-
-
-
-    println!("g1 = {:?}", g1);
-    println!("g2 = {:?}", g2);
-
-
-    let a = G1Affine::new(Fq::from(MontFp!("3010198690406615200373504922352659861758983907867017329644089018310584441462")), 
-                                        Fq::from(MontFp!("17861058253836152797273815394432013122766662423622084931972383889279925210507")));
-    let b = G2Affine::new(
-        Fq2::new(
-            MontFp!("2725019753478801796453339367788033689375851816420509565303521482350756874229"),
-
-            MontFp!("7273165102799931111715871471550377909735733521218303035754523677688038059653"),
-
-        ),
-        Fq2::new(
-            MontFp!("2512659008974376214222774206987427162027254181373325676825515531566330959255"),
-
-            MontFp!("957874124722006818841961785324909313781880061366718538693995380805373202866"),
-
-        )
-    );
-
-    let c = G1Affine::new(
-        Fq::from(MontFp!("4503322228978077916651710446042370109107355802721800704639343137502100212473")), 
-        Fq::from(MontFp!("6132642251294427119375180147349983541569387941788025780665104001559216576968"))
-    );
-
-    let d = G2Affine::new(
-        Fq2::new(
-            MontFp!("18029695676650738226693292988307914797657423701064905010927197838374790804409"),
-
-            MontFp!("14583779054894525174450323658765874724019480979794335525732096752006891875705"),
-
-        ),
-        Fq2::new(
-            MontFp!("2140229616977736810657479771656733941598412651537078903776637920509952744750"),
-
-            MontFp!("11474861747383700316476719153975578001603231366361248090558603872215261634898"),
-
-        )
-    );
-
-    let e = miller_loop_native(&b,&(a));
-    let f = miller_loop_native(&d,&c);
-    let g = e * f;
-    let h = final_exp_native(g);
-    print_ark_fq(h.coeffs[0], "h.coeffs[0]".to_string());
-    print_ark_fq(h.coeffs[1], "h.coeffs[1]".to_string());
-    print_ark_fq(h.coeffs[2], "h.coeffs[2]".to_string());
-    print_ark_fq(h.coeffs[3], "h.coeffs[3]".to_string());
-    print_ark_fq(h.coeffs[4], "h.coeffs[4]".to_string());
-    print_ark_fq(h.coeffs[5], "h.coeffs[5]".to_string());
-    println!("h = {:?}", h);
-
-    // println!("f = {:?}", f);
-    let Q = G2Affine::generator();
-    let P = G1Affine::generator();
-    let m = miller_loop_native(&Q, &P);
-    let r = final_exp_native(m);
-    print_ark_fq(r.coeffs[0], "r.coeffs[0]".to_string());
-
-    // println!("g = {:?}", g);
-
-    // println!("g zero = {:?}", g.is_zero());
-    // assert_eq!(e, f);
-    
-
-
-    // println!("Fr = {:?}", Fq::from("21888242871839275222246405745257275088696311157297823662689037894645226208583"));
-
-    
-
-    // assert!(vk.ic.len() == )
-
-
-
-    // G1Affine::from(Affine;
-    // verify_proof()
+    // verify(input, proof)
 }
 
 
@@ -252,11 +149,8 @@ fn verify<F: RichField+ Extendable<D>, const D: usize>(
 
     vk_x = vk_x.add(vk.ic[0]).into_affine();
     
-    
+    //TODO negate check
     pairing_prod(proof.a.into_group().neg().into_affine(), proof.b, vk.alpha1, vk.beta2, vk_x, vk.gamma2, proof.c, vk.delta2)
-    
-
-    // printl/n!("vk_x = {:?}", vk_x);
 
 }
 
@@ -282,13 +176,13 @@ fn pairing_prod<>(a1: G1Affine, a2: G2Affine, b1: G1Affine, b2: G2Affine, c1: G1
 fn pairing_check(p1: Vec<G1Affine>, p2: Vec<G2Affine>) -> bool {
     // TODO
 
-    let e1 = pairing(p1[0], p2[0]);
-    let e2 = pairing(p1[1], p2[1]);
-    let e3 = pairing(p1[2], p2[2]);
-    let e4 = pairing(p1[3], p2[3]);
-
-
-    e1.add(&e2).add(&e3).add(&e4).is_zero()
+    let mut res = pairing(p1[0], p2[0]);
+    for i in 1..p1.len() {
+        let temp_e = pairing(p1[i], p2[i]);
+        res = res * temp_e;
+    }
+    res.c0.is_one() && res.c1.is_zero()
+    // true
 }
 
 

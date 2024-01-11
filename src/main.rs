@@ -7,17 +7,19 @@ use ark_std::UniformRand;
 use num_bigint::ToBigInt;
 use num_traits::{Zero, One};
 use plonky2::field::extension::Extendable;
+use plonky2::fri::proof;
 // use plonky2::field::types::Field;
 use plonky2::hash::hash_types::RichField;
 use plonky2::iop::target::{Target, BoolTarget, self};
 use plonky2::iop::witness::{PartialWitness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2::plonk::circuit_data::CircuitConfig;
-use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
+use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig, AlgebraicHasher};
 use plonky2::{
     field::{goldilocks_field::GoldilocksField, types::PrimeField64},
 };
 use plonky2_bn254::fields::debug_tools::print_ark_fq;
+use plonky2_bn254::fields::fq_target::FqTarget;
 use plonky2_ecdsa::curve::curve_types::Curve;
 use rayon::str;
 use core::num::ParseIntError;
@@ -33,7 +35,11 @@ use ark_ff::fields::Field;
 
 use itertools::Itertools;
 
-use plonky2_bn254_pairing::pairing::pairing;
+use plonky2_bn254_pairing::pairing::{pairing, pairing_circuit};
+use plonky2_bn254::{
+    curves::{g1curve_target::G1Target, g2curve_target::G2Target},
+    fields::fq12_target::Fq12Target,
+};
 use plonky2_bn254_pairing::final_exp_native::final_exp_native;
 use plonky2_bn254_pairing::miller_loop_native::miller_loop_native;
 
@@ -51,6 +57,22 @@ pub struct Proof {
     pub a: G1Affine,
     pub b: G2Affine,
     pub c: G1Affine
+}
+
+
+pub struct ProofTarget <F: RichField + Extendable<D>, const D: usize> {
+    pub a: G1Target<F, D>,
+    pub b: G2Target<F, D>,
+    pub c: G1Target<F, D>
+}
+
+pub struct VerificationKeyTarget <F: RichField + Extendable<D>, const D: usize> {
+    pub alpha1: G1Target<F, D>,
+    pub beta2: G2Target<F, D>,
+    pub gamma2: G2Target<F, D>,
+    pub delta2: G2Target<F, D>,
+    pub ic: Vec<G1Target<F, D>>,
+
 }
 
 
@@ -120,6 +142,10 @@ fn main() {
     type C = PoseidonGoldilocksConfig;
     const D: usize = 2;
 
+    let config =  CircuitConfig::standard_ecc_config();
+    let mut builder = CircuitBuilder::<F, D>::new(config);
+
+
     let proof = Proof {
         a: G1Affine::new(
             Fq::from(MontFp!("12887163950774589848429612384269252267879103641214292968732875014481055665029")),
@@ -141,11 +167,75 @@ fn main() {
         ),
     };
 
+    // let  = make_verification_circuit(&mut builder);
+
+    let proof_target = ProofTarget {
+        a: G1Target::constant(&mut builder, proof.a),
+        b: G2Target::constant(&mut builder, proof.b),
+        c: G1Target::constant(&mut builder, proof.c),
+    };
+
     println!("proof correct points");
+
+    // let input_target = 
+
 
     let input   = vec![20]; 
     let res = verify::<F, D>(input, proof);
     println!("Is the proof correct? = {:?}", res);
+}
+
+fn make_verification_circuit<
+    F: RichField + Extendable<D>,
+    C: GenericConfig<D, F = F> + 'static,
+    const D: usize>
+(
+    builder: &mut CircuitBuilder<F, D>,
+    input: Vec<u64>,
+    num_inputs: usize,
+) 
+where
+    <C as GenericConfig<D>>::Hasher: AlgebraicHasher<F>,
+{
+    let vk_alpha1 = G1Target::empty( builder);
+    let vk_beta2 = G2Target::empty( builder);
+    let vk_gamma2 = G2Target::empty( builder);
+    let vk_delta2 = G2Target::empty( builder);
+    let mut vk_ic = (0..num_inputs).map(|_| G1Target::empty(builder)).collect_vec();
+
+    let input_target = (0..num_inputs).map(|_| FqTarget::empty(builder)).collect_vec();
+    
+    let proof_a = G1Target::empty( builder);
+    let proof_b = G2Target::empty( builder);
+    let proof_c = G1Target::empty( builder);
+
+    for i in 0..num_inputs {
+        // vk_x = vk_x.add(vk_ic[i+1].mul_bigint(&[input[i];1])).into_affine();
+        let (x, y) = (vk_ic[i].x.clone(), vk_ic[i].y.clone());
+        let (x_ic_mul_input) = x.mul(builder, &input_target[i]);
+        let (y_ic_mul_input) = y.mul(builder, &input_target[i]);
+        let (x_ic_mul_input_plus_x) = x_ic_mul_input.add(builder, &vk_ic[i].x);
+        let (y_ic_mul_input_plus_y) = y_ic_mul_input.add(builder, &vk_ic[i].y);
+        
+    }
+
+    let neg_a = proof_a.neg(builder);
+    let mut res1 = pairing_circuit::<F, C, D>( builder, neg_a, proof_b);
+    let mut res2 = pairing_circuit::<F, C, D>( builder, vk_alpha1, vk_beta2);
+    let res3 = pairing_circuit::<F, C, D>( builder, vk_gamma2, proof_c);
+
+    
+
+    // for i in 1..p1.len() {
+    //     let temp_e = pairing(p1[i], p2[i]);
+    //     res = res * temp_e;
+    // }
+    // res.c0.is_one() && res.c1.is_zero()
+
+
+
+
+   
 }
 
 
@@ -163,7 +253,6 @@ fn verify<F: RichField+ Extendable<D>, const D: usize>(
     for i in 0..input.len() {
         //TODO
         // assert!(input[i] < )
-        println!("i = {:?}", i);
         vk_x = vk_x.add(vk.ic[i+1].mul_bigint(&[input[i];1])).into_affine();
 
     }    

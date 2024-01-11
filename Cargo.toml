@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.79"
-plonky2 = "0.1.4"
+plonky2 = {git="https://github.com/InternetMaximalism/plonky2", rev="541e127"}
 plonky2_u32={git="https://github.com/InternetMaximalism/plonky2", rev="541e127"}
 plonky2_ecdsa={git="https://github.com/InternetMaximalism/plonky2", rev="541e127"}
 starky = {git="https://github.com/InternetMaximalism/plonky2", rev="541e127"}

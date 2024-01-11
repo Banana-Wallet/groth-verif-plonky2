@@ -183,6 +183,33 @@ fn main() {
     let input   = vec![20]; 
     let res = verify::<F, D>(input, proof);
     println!("Is the proof correct? = {:?}", res);
+
+    let rng = &mut rand::thread_rng();
+    let p = G1Affine::rand(rng);
+    let q = G2Affine::rand(rng);
+    let r = G1Affine::rand(rng);
+    let s = G2Affine::rand(rng);
+    let output1 = pairing(p, q);
+    let output2 = pairing(r, s);
+    let output = output1 * output2;
+
+    let config = CircuitConfig::standard_ecc_config();
+    let mut builder = CircuitBuilder::<F, D>::new(config);
+    let p_t = G1Target::constant(&mut builder, p);
+    let q_t = G2Target::constant(&mut builder, q);
+    let r_t = G1Target::constant(&mut builder, r);
+    let s_t = G2Target::constant(&mut builder, s);
+    let output1_t = pairing_circuit::<F, C, D>(&mut builder, p_t, q_t);
+    let output2_t = pairing_circuit::<F, C, D>(&mut builder, r_t, s_t);
+    let output_t = output1_t.mul(&mut builder, &output2_t);
+
+    let data = builder.build::<C>();
+    let mut pw = PartialWitness::<F>::new();
+    output_t.set_witness(&mut pw, &output);
+    let _proof = data.prove(pw).unwrap();
+
+    let res1 = data.verify(_proof);
+
 }
 
 fn make_verification_circuit<
@@ -201,7 +228,7 @@ where
     let vk_beta2 = G2Target::empty( builder);
     let vk_gamma2 = G2Target::empty( builder);
     let vk_delta2 = G2Target::empty( builder);
-    let mut vk_ic = (0..num_inputs).map(|_| G1Target::empty(builder)).collect_vec();
+    let  vk_ic = (0..num_inputs).map(|_| G1Target::empty(builder)).collect_vec();
 
     let input_target = (0..num_inputs).map(|_| FqTarget::empty(builder)).collect_vec();
     
@@ -209,33 +236,31 @@ where
     let proof_b = G2Target::empty( builder);
     let proof_c = G1Target::empty( builder);
 
+    let vk_x = vk_ic[0].clone();
+
     for i in 0..num_inputs {
         // vk_x = vk_x.add(vk_ic[i+1].mul_bigint(&[input[i];1])).into_affine();
-        let (x, y) = (vk_ic[i].x.clone(), vk_ic[i].y.clone());
+        let (x, y) = (vk_ic[i+1].x.clone(), vk_ic[i+1].y.clone());
         let (x_ic_mul_input) = x.mul(builder, &input_target[i]);
         let (y_ic_mul_input) = y.mul(builder, &input_target[i]);
         let (x_ic_mul_input_plus_x) = x_ic_mul_input.add(builder, &vk_ic[i].x);
         let (y_ic_mul_input_plus_y) = y_ic_mul_input.add(builder, &vk_ic[i].y);
-        
+        let temp_affine = G1Target::new(x_ic_mul_input_plus_x, y_ic_mul_input_plus_y);
+        vk_x.add(builder, &temp_affine);
     }
 
     let neg_a = proof_a.neg(builder);
     let mut res1 = pairing_circuit::<F, C, D>( builder, neg_a, proof_b);
     let mut res2 = pairing_circuit::<F, C, D>( builder, vk_alpha1, vk_beta2);
-    let res3 = pairing_circuit::<F, C, D>( builder, vk_gamma2, proof_c);
+    let res3 = pairing_circuit::<F, C, D>( builder, vk_x, vk_gamma2);
+    let res4 = pairing_circuit::<F, C, D>( builder, proof_c, vk_delta2);
 
     
+    let res1_res2 = res1.mul(builder, &res2);
+    let res3_res4 = res3.mul(builder, &res4);
+    let res = res1_res2.mul(builder, &res3_res4);
 
-    // for i in 1..p1.len() {
-    //     let temp_e = pairing(p1[i], p2[i]);
-    //     res = res * temp_e;
-    // }
-    // res.c0.is_one() && res.c1.is_zero()
-
-
-
-
-   
+    let one = Fq12Target::constant(builder, Fq12::one());
 }
 
 

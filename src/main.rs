@@ -4,7 +4,7 @@ use ark_ec::{AffineRepr, CurveConfig, CurveGroup};
 use ark_ec::short_weierstrass::Affine;
 use ark_ff::{MontFp, QuadExtConfig, Fp};
 use ark_std::UniformRand;
-use num_bigint::ToBigInt;
+use num_bigint::{ToBigInt, BigUint};
 use num_traits::{Zero, One};
 use plonky2::field::extension::Extendable;
 use plonky2::fri::proof;
@@ -18,14 +18,17 @@ use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig, AlgebraicH
 use plonky2::{
     field::{goldilocks_field::GoldilocksField, types::PrimeField64},
 };
-use plonky2_bn254::fields::debug_tools::print_ark_fq;
+use plonky2_bn254::fields::debug_tools::{print_ark_fq, print_fq_target};
+use plonky2_bn254::fields::fq2_target::Fq2Target;
 use plonky2_bn254::fields::fq_target::FqTarget;
+use plonky2_bn254_pairing::miller_loop_native::SIX_U_PLUS_2_NAF;
 use plonky2_ecdsa::curve::curve_types::Curve;
 use rayon::str;
 use core::num::ParseIntError;
 use std::char::from_digit;
 use std::fmt::Debug;
 use std::ops::{Add, Neg, Sub};
+
 // use pairing::G1Point;
 
 use ark_bn254::{Fq12, G1Affine, G2Affine, Config, Fq, fr};
@@ -137,6 +140,351 @@ fn get_verification_key() -> VerificationKey {
     }
 }
 
+const XI_0: usize = 9;
+
+fn sparse_line_function_unequal<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    Q: (&G2Target<F, D>, &G2Target<F, D>),
+    P: &G1Target<F, D>,
+) -> Vec<Option<Fq2Target<F, D>>> {
+    let (x_1, y_1) = (&Q.0.x, &Q.0.y);
+    let (x_2, y_2) = (&Q.1.x, &Q.1.y);
+    let (x, y) = (&P.x, &P.y);
+    let y1_minus_y2 = y_1.sub(builder, &y_2);
+    let x2_minus_x1 = x_2.sub(builder, &x_1);
+    let x1y2 = x_1.mul(builder, &y_2);
+    let x2y1 = x_2.mul(builder, &y_1);
+    let out3 = y1_minus_y2.mul_scalar(builder, &x);
+    let out2 = x2_minus_x1.mul_scalar(builder, &y);
+    let out5 = x1y2.sub(builder, &x2y1);
+
+    vec![None, None, Some(out2), Some(out3), None, Some(out5)]
+}
+
+fn sparse_line_function_equal<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    Q: &G2Target<F, D>,
+    P: &G1Target<F, D>,
+) -> Vec<Option<Fq2Target<F, D>>> {
+    let (x, y) = (&Q.x, &Q.y);
+    let x_sq = x.mul(builder, &x);
+    let x_cube = x_sq.mul(builder, &x);
+    let three_x_cu = x_cube.mul_scalar_const(builder, &Fq::from(3));
+    let y_sq = y.mul(builder, &y);
+    let two_y_sq = y_sq.mul_scalar_const(builder, &Fq::from(2));
+    let out0_left = three_x_cu.sub(builder, &two_y_sq);
+    let out0 = out0_left.mul_w6::<XI_0>(builder);
+    let x_sq_px = x_sq.mul_scalar(builder, &P.x);
+    let out4 = x_sq_px.mul_scalar_const(builder, &Fq::from(-3));
+    let y_py = y.mul_scalar(builder, &P.y);
+    let out3 = y_py.mul_scalar_const(builder, &Fq::from(2));
+
+    vec![Some(out0), None, None, Some(out3), Some(out4), None]
+}
+
+fn sparse_fp12_multiply<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    a: &Fq12Target<F, D>,
+    b: Vec<Option<Fq2Target<F, D>>>,
+) -> Fq12Target<F, D> {
+    let mut a_fp2_coeffs = Vec::with_capacity(6);
+    for i in 0..6 {
+        a_fp2_coeffs.push(Fq2Target {
+            coeffs: [a.coeffs[i].clone(), a.coeffs[i + 6].clone()],
+        });
+    }
+    let mut prod_2d: Vec<Option<Fq2Target<F, D>>> = vec![None; 11];
+    for i in 0..6 {
+        for j in 0..6 {
+            prod_2d[i + j] = match (prod_2d[i + j].clone(), &a_fp2_coeffs[i], b[j].as_ref()) {
+                (a, _, None) => a,
+                (None, a, Some(b)) => {
+                    let ab = a.mul(builder, b);
+                    Some(ab)
+                }
+                (Some(a), b, Some(c)) => {
+                    let bc = b.mul(builder, c);
+                    let out = a.add(builder, &bc);
+                    Some(out)
+                }
+            };
+        }
+    }
+    let mut out_fp2 = Vec::with_capacity(6);
+    for i in 0..6 {
+        let prod = if i != 5 {
+            let eval_w6 = prod_2d[i + 6].as_ref().map(|a| a.mul_w6::<XI_0>(builder));
+            match (prod_2d[i].as_ref(), eval_w6) {
+                (None, b) => b.unwrap(), // Our current use cases of 235 and 034 sparse multiplication always result in non-None value
+                (Some(a), None) => a.clone(),
+                (Some(a), Some(b)) => a.add(builder, &b),
+            }
+        } else {
+            prod_2d[i].clone().unwrap()
+        };
+        out_fp2.push(prod);
+    }
+    let mut out_coeffs = Vec::with_capacity(12);
+    for fp2_coeff in &out_fp2 {
+        out_coeffs.push(fp2_coeff.coeffs[0].clone());
+    }
+    for fp2_coeff in &out_fp2 {
+        out_coeffs.push(fp2_coeff.coeffs[1].clone());
+    }
+
+    Fq12Target {
+        coeffs: out_coeffs.try_into().unwrap(),
+    }
+}
+
+fn fp12_multiply_with_line_unequal<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    g: &Fq12Target<F, D>,
+    Q: (&G2Target<F, D>, &G2Target<F, D>),
+    P: &G1Target<F, D>,
+) -> Fq12Target<F, D> {
+    let line = sparse_line_function_unequal(builder, Q, P);
+    sparse_fp12_multiply(builder, g, line)
+}
+
+fn fp12_multiply_with_line_equal<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    g: &Fq12Target<F, D>,
+    Q: &G2Target<F, D>,
+    P: &G1Target<F, D>,
+) -> Fq12Target<F, D> {
+    let line = sparse_line_function_equal(builder, Q, P);
+    sparse_fp12_multiply(builder, g, line)
+}
+
+fn miller_loop_BN<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    Q: &G2Target<F, D>,
+    P: &G1Target<F, D>,
+    pseudo_binary_encoding: &[i8],
+) -> Fq12Target<F, D> {
+    let mut i = pseudo_binary_encoding.len() - 1;
+    while pseudo_binary_encoding[i] == 0 {
+        i -= 1;
+    }
+    let last_index = i;
+    assert!(pseudo_binary_encoding[i] == 1 || pseudo_binary_encoding[i] == -1);
+    let mut R = if pseudo_binary_encoding[i] == 1 {
+        Q.clone()
+    } else {
+        Q.neg(builder)
+    };
+    i -= 1;
+
+    // initialize the first line function into Fq12 point
+    let sparse_f = sparse_line_function_equal(builder, &R, P);
+    assert_eq!(sparse_f.len(), 6);
+
+    let zero_fp = FqTarget::constant(builder, Fq::ZERO);
+    let mut f_coeffs = Vec::with_capacity(12);
+    for coeff in &sparse_f {
+        if let Some(fp2_point) = coeff {
+            f_coeffs.push(fp2_point.coeffs[0].clone());
+        } else {
+            f_coeffs.push(zero_fp.clone());
+        }
+    }
+    for coeff in &sparse_f {
+        if let Some(fp2_point) = coeff {
+            f_coeffs.push(fp2_point.coeffs[1].clone());
+        } else {
+            f_coeffs.push(zero_fp.clone());
+        }
+    }
+
+    let mut f = Fq12Target {
+        coeffs: f_coeffs.try_into().unwrap(),
+    };
+    i = 1;
+    loop {
+        print_fq_target(builder, &f.coeffs[0], "final_f".to_string());
+
+
+        if i != last_index - 1 {
+            let f_sq = f.mul(builder, &f);
+            f = fp12_multiply_with_line_equal(builder, &f_sq, &R, P);
+        }
+        R = R.double(builder);
+
+        assert!(pseudo_binary_encoding[i] <= 1 && pseudo_binary_encoding[i] >= -1);
+        if pseudo_binary_encoding[i] != 0 {
+            let sign_Q = if pseudo_binary_encoding[i] == 1 {
+                Q.clone()
+            } else {
+                Q.neg(builder)
+            };
+            f = fp12_multiply_with_line_unequal(builder, &f, (&R, &sign_Q), P);
+            R = R.add(builder, &sign_Q);
+        }
+        if i == 0 {
+            break;
+        }
+        i -= 1;
+    }
+
+    // let neg_one: BigUint = Fq::from(-1).into();
+    // let k = neg_one / BigUint::from(6u32);
+    // let expected_c = Fq2::new(Fq::from(9), Fq::one()).pow(k.to_u64_digits());
+    // let c2 = expected_c * expected_c;
+    // let c3 = c2 * expected_c;
+    // let c2 = Fq2Target::constant(builder, c2);
+    // let c3 = Fq2Target::constant(builder, c3);
+
+    // let Q_1 = twisted_frobenius(builder, Q, c2.clone(), c3.clone());
+    // let neg_Q_2 = neg_twisted_frobenius(builder, &Q_1, c2.clone(), c3.clone());
+    // f = fp12_multiply_with_line_unequal(builder, &f, (&R, &Q_1), P);
+    // R = R.add(builder, &Q_1);
+    // f = fp12_multiply_with_line_unequal(builder, &f, (&R, &neg_Q_2), P);
+
+    // print_fq_target(builder, &f.coeffs[0], "final_f".to_string());
+
+    f
+}
+
+fn multi_miller_loop_BN<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    pairs: Vec<(&G1Target<F, D>, &G2Target<F, D>)>,
+    pseudo_binary_encoding: &[i8],
+) -> Fq12Target<F, D> {
+    let mut i = pseudo_binary_encoding.len() - 1;
+    while pseudo_binary_encoding[i] == 0 {
+        i -= 1;
+    }
+    let last_index = i;
+    assert_eq!(pseudo_binary_encoding[last_index], 1);
+
+    let neg_b: Vec<G2Target<F, D>> = pairs.iter().map(|pair| pair.1.neg(builder)).collect();
+
+    // initialize the first line function into Fq12 point
+    let mut f = {
+        let sparse_f = sparse_line_function_equal(builder, pairs[0].1, pairs[0].0);
+        assert_eq!(sparse_f.len(), 6);
+
+        let zero_fp = FqTarget::constant(builder, Fq::ZERO);
+        let mut f_coeffs = Vec::with_capacity(12);
+        for coeff in &sparse_f {
+            if let Some(fp2_point) = coeff {
+                f_coeffs.push(fp2_point.coeffs[0].clone());
+            } else {
+                f_coeffs.push(zero_fp.clone());
+            }
+        }
+        for coeff in &sparse_f {
+            if let Some(fp2_point) = coeff {
+                f_coeffs.push(fp2_point.coeffs[1].clone());
+            } else {
+                f_coeffs.push(zero_fp.clone());
+            }
+        }
+        Fq12Target {
+            coeffs: f_coeffs.try_into().unwrap(),
+        }
+    };
+
+    for &(a, b) in pairs.iter().skip(1) {
+        f = fp12_multiply_with_line_equal(builder, &f, b, a);
+    }
+
+    i -= 1;
+    let mut r = pairs.iter().map(|pair| pair.1.clone()).collect::<Vec<_>>();
+    loop {
+        if i != last_index - 1 {
+            f = f.mul(builder, &f);
+            for (r, &(a, _)) in r.iter().zip(pairs.iter()) {
+                f = fp12_multiply_with_line_equal(builder, &f, r, a);
+            }
+        }
+        for r in r.iter_mut() {
+            *r = r.double(builder);
+        }
+
+        assert!(pseudo_binary_encoding[i] <= 1 && pseudo_binary_encoding[i] >= -1);
+        if pseudo_binary_encoding[i] != 0 {
+            for ((r, neg_b), &(a, b)) in r.iter_mut().zip(neg_b.iter()).zip(pairs.iter()) {
+                let sign_b = if pseudo_binary_encoding[i] == 1 {
+                    b
+                } else {
+                    neg_b
+                };
+                f = fp12_multiply_with_line_unequal(builder, &f, (r, sign_b), a);
+                *r = r.add(builder, &sign_b);
+            }
+        }
+        if i == 0 {
+            break;
+        }
+        i -= 1;
+    }
+
+    let neg_one: BigUint = Fq::from(-1).into();
+    let k = neg_one / BigUint::from(6u32);
+    let expected_c = Fq2::new(Fq::from(9), Fq::one()).pow(k.to_u64_digits());
+
+    let c2 = expected_c * expected_c;
+    let c3 = c2 * expected_c;
+    let c2 = Fq2Target::constant(builder, c2);
+    let c3 = Fq2Target::constant(builder, c3);
+
+    // finish multiplying remaining line functions outside the loop
+    for (r, &(a, b)) in r.iter_mut().zip(pairs.iter()) {
+        let b_1 = twisted_frobenius(builder, &b, c2.clone(), c3.clone());
+        let neg_b_2 = neg_twisted_frobenius(builder, &b_1, c2.clone(), c3.clone());
+        f = fp12_multiply_with_line_unequal(builder, &f, (r, &b_1), a);
+        // *r = (r.clone() + b_1).into();
+        *r = r.add(builder, &b_1);
+        f = fp12_multiply_with_line_unequal(builder, &f, (r, &neg_b_2), a);
+    }
+    f
+}
+
+fn twisted_frobenius<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    Q: &G2Target<F, D>,
+    c2: Fq2Target<F, D>,
+    c3: Fq2Target<F, D>,
+) -> G2Target<F, D> {
+    let frob_x = Q.x.conjugate(builder);
+    let frob_y = Q.y.conjugate(builder);
+    let out_x = c2.mul(builder, &frob_x);
+    let out_y = c3.mul(builder, &frob_y);
+    G2Target::new(out_x, out_y)
+}
+
+fn neg_twisted_frobenius<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    Q: &G2Target<F, D>,
+    c2: Fq2Target<F, D>,
+    c3: Fq2Target<F, D>,
+) -> G2Target<F, D> {
+    let frob_x = Q.x.conjugate(builder);
+    let neg_frob_y = Q.y.neg_conjugate(builder);
+    let out_x = c2.mul(builder, &frob_x);
+    let out_y = c3.mul(builder, &neg_frob_y);
+    G2Target::new(out_x, out_y)
+}
+
+pub fn miller_loop_circuit<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    Q: &G2Target<F, D>,
+    P: &G1Target<F, D>,
+) -> Fq12Target<F, D> {
+    println!("printing");
+    miller_loop_BN(builder, Q, P, &SIX_U_PLUS_2_NAF)
+}
+
+pub fn multi_miller_loop_circuit<F: RichField + Extendable<D>, const D: usize>(
+    builder: &mut CircuitBuilder<F, D>,
+    pairs: Vec<(&G1Target<F, D>, &G2Target<F, D>)>,
+) -> Fq12Target<F, D> {
+    multi_miller_loop_BN(builder, pairs, &SIX_U_PLUS_2_NAF)
+}
+
+
 fn main() {
     type F = GoldilocksField;
     type C = PoseidonGoldilocksConfig;
@@ -187,28 +535,30 @@ fn main() {
     let rng = &mut rand::thread_rng();
     let p = G1Affine::rand(rng);
     let q = G2Affine::rand(rng);
-    let r = G1Affine::rand(rng);
-    let s = G2Affine::rand(rng);
-    let output1 = pairing(p, q);
-    let output2 = pairing(r, s);
-    let output = output1 * output2;
+    let r_expected = miller_loop_native(&q, &p);
+    // let output = pairing(p, q);
 
     let config = CircuitConfig::standard_ecc_config();
     let mut builder = CircuitBuilder::<F, D>::new(config);
     let p_t = G1Target::constant(&mut builder, p);
     let q_t = G2Target::constant(&mut builder, q);
-    let r_t = G1Target::constant(&mut builder, r);
-    let s_t = G2Target::constant(&mut builder, s);
-    let output1_t = pairing_circuit::<F, C, D>(&mut builder, p_t, q_t);
-    let output2_t = pairing_circuit::<F, C, D>(&mut builder, r_t, s_t);
-    let output_t = output1_t.mul(&mut builder, &output2_t);
+    // let f_t = miller_loop_circuit(&mut builder, &q_t, &p_t);
+    // let output_t = pairing_circuit::<F, C, D>(&mut builder, p_t, q_t);
 
+    let r_t = miller_loop_circuit(&mut builder, &q_t, &p_t);
+    let r_expected_t = Fq12Target::constant(&mut builder, r_expected.into());
+
+    // Fq12Target::connect(&mut builder, &r_t, &r_expected_t);
+
+    let pw = PartialWitness::<F>::new();
     let data = builder.build::<C>();
-    let mut pw = PartialWitness::<F>::new();
-    output_t.set_witness(&mut pw, &output);
+    dbg!(data.common.degree_bits());
     let _proof = data.prove(pw).unwrap();
+    println!("proof generated");
+    println!("{}",_proof.clone().to_bytes().len());
+    // let _proof = data.prove(pw).unwrap();
 
-    let res1 = data.verify(_proof);
+    // let res1 = data.verify(_proof);
 
 }
 
@@ -318,5 +668,66 @@ fn pairing_check(p1: Vec<G1Affine>, p2: Vec<G2Affine>) -> bool {
 
 
 // fn/
+#[cfg(test)]
+mod test {
+    use ark_bn254::{G1Affine, G2Affine};
+    use ark_std::UniformRand;
+    use plonky2::{
+        field::goldilocks_field::GoldilocksField,
+        iop::witness::PartialWitness,
+        plonk::{
+            circuit_builder::CircuitBuilder, circuit_data::CircuitConfig,
+            config::PoseidonGoldilocksConfig,
+        },
+    };
+    use plonky2::hash::hash_types::RichField;
+    use plonky2::field::extension::Extendable;
+    use plonky2_bn254::{
+        curves::{g1curve_target::G1Target, g2curve_target::G2Target},
+        fields::fq12_target::Fq12Target,
+    };
 
+
+    use plonky2_bn254_pairing::{pairing::{pairing, pairing_circuit}, miller_loop_target::miller_loop_circuit};
+    use rayon::vec;
+
+    use plonky2_bn254_pairing::miller_loop_native::{miller_loop_native};
+
+    
+
+
+    #[test]
+    fn test_pairing_circuit() {
+        type F = GoldilocksField;
+        type C = PoseidonGoldilocksConfig;
+        const D: usize = 2;
+
+        let rng = &mut rand::thread_rng();
+        let p = G1Affine::rand(rng);
+        let q = G2Affine::rand(rng);
+        let r_expected = miller_loop_native(&q, &p);
+        // let output = pairing(p, q);
+
+        let config = CircuitConfig::standard_ecc_config();
+        let mut builder = CircuitBuilder::<F, D>::new(config);
+        let p_t = G1Target::constant(&mut builder, p);
+        let q_t = G2Target::constant(&mut builder, q);
+        // let f_t = miller_loop_circuit(&mut builder, &q_t, &p_t);
+        // let output_t = pairing_circuit::<F, C, D>(&mut builder, p_t, q_t);
+
+        let r_t = miller_loop_circuit(&mut builder, &q_t, &p_t);
+        let r_expected_t = Fq12Target::constant(&mut builder, r_expected.into());
+
+        Fq12Target::connect(&mut builder, &r_t, &r_expected_t);
+
+        let pw = PartialWitness::<F>::new();
+        let data = builder.build::<C>();
+        dbg!(data.common.degree_bits());
+        let _proof = data.prove(pw);
+        // let data = builder.build::<C>();
+        // let mut pw = PartialWitness::<F>::new();
+        // f_t.set_witness(&mut pw, &f);
+        // let _proof = data.prove(pw).unwrap();
+    }
+}
 

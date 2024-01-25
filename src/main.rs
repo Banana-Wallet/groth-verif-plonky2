@@ -629,8 +629,6 @@ fn main() {
     println!("proof generated");
     println!("{}",_proof.clone().to_bytes().len());
 
-
-
     // let mut vk_x = vk.ic[0];
 
     // let input = vec![20];

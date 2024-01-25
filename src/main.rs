@@ -28,6 +28,8 @@ use core::num::ParseIntError;
 use std::char::from_digit;
 use std::fmt::Debug;
 use std::ops::{Add, Neg, Sub};
+use std::time::{Instant};
+
 
 // use pairing::G1Point;
 
@@ -625,9 +627,13 @@ fn main() {
 
     let data = builder.build::<C>();
     // dbg!(data.common.degree_bits());
+    let start_time = Instant::now();
     let _proof = data.prove(pw).unwrap();
+    let end_time = Instant::now();
     println!("proof generated");
     println!("{}",_proof.clone().to_bytes().len());
+    let elapsed_time = end_time.duration_since(start_time);
+    println!("Time Taken {} seconds", elapsed_time.as_secs_f64());
 
     // let mut vk_x = vk.ic[0];
 

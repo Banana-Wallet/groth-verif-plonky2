@@ -588,7 +588,7 @@ fn main() {
     // let p = G1Affine::rand(rng);
     // let q = G2Affine::rand(rng);
     // let r_expected = miller_loop_native(&q, &p);
-
+    println!("Started to constraint defination circuit #1");
     // let output = pairing(p, q);
     // ! started building circuit
     let config = CircuitConfig::standard_ecc_config();
@@ -641,6 +641,9 @@ fn main() {
     let res = res1_res2.mul(&mut builder, &res3_res4);
     let res_expected = Fq12Target::constant(&mut builder, Fq12::one());
 
+    println!("Completed constraint defination circuit #1");
+    println!("Started constraint defination circuit #2");
+
     let vk_alpha1_c2 = G1Target::empty(&mut builder);
     let vk_beta2_c2 = G2Target::empty(&mut builder);
     let vk_gamma2_c2 = G2Target::empty(&mut builder);
@@ -687,6 +690,8 @@ fn main() {
     let res_c2 = res1_res2_c2.mul(&mut builder, &res3_res4_c2);
     let res_expected_c2 = Fq12Target::constant(&mut builder, Fq12::one());
 
+    println!("Completed constraint defination circuit #2");
+
     let vk = get_verification_key();
 
     println!("loaded verification key");
@@ -703,6 +708,8 @@ fn main() {
     let (proof_b_x, proof_b_y) = proof.b.xy().unwrap();
     let (proof_c_x, proof_c_y) = proof.c.xy().unwrap();
 
+    println!("Setting witnesses");
+    let start_setting_witness = Instant::now();
     vk_alpha1.x.set_witness(&mut pw, vk_alpha_x);
     vk_alpha1.y.set_witness(&mut pw, vk_alpha_y);
 
@@ -757,12 +764,25 @@ fn main() {
     proof_c_c2.y.set_witness(&mut pw, proof_c_y);
     input_target_c2[0].set_witness(&mut pw, &Fq::from(20u64));
 
-    println!("Actual circuit verification started");
+    let end_setting_witness = Instant::now();
+    let elapsed_time_witness = end_setting_witness.duration_since(start_setting_witness);
+    println!("Time Taken to set circuit witnesses {} seconds", elapsed_time_witness.as_secs_f64());
+
+    println!("Witnesses set");
+    println!("Started building circuit");
+    let start_build_time = Instant::now();
     let data = builder.build::<C>();
+    let end_build_time = Instant::now();
+    let elapsed_time_build = end_build_time.duration_since(start_build_time);
+    println!("Circuit built");
+
+    println!("Time Taken to build circuit {} seconds", elapsed_time_build.as_secs_f64());
+    println!("Started proving....");
     // dbg!(data.common.degree_bits());
     let start_time = Instant::now();
     let _proof = data.prove(pw).unwrap();
     let end_time = Instant::now();
+    println!("Proving completed...");
     println!("proof generated");
     println!("{}", _proof.clone().to_bytes().len());
     let elapsed_time = end_time.duration_since(start_time);

@@ -53,7 +53,6 @@ pub struct VerificationKey {
     pub gamma2: G2Affine,
     pub delta2: G2Affine,
     pub ic: Vec<G1Affine>,
-
 }
 
 pub struct Proof {
@@ -75,7 +74,6 @@ pub struct VerificationKeyTarget <F: RichField + Extendable<D>, const D: usize> 
     pub gamma2: G2Target<F, D>,
     pub delta2: G2Target<F, D>,
     pub ic: Vec<G1Target<F, D>>,
-
 }
 
 
@@ -300,7 +298,6 @@ fn miller_loop_BN<F: RichField + Extendable<D>, const D: usize>(
     let mut f = Fq12Target {
         coeffs: f_coeffs.try_into().unwrap(),
     };
-    i = 1;
     loop {
         print_fq_target(builder, &f.coeffs[0], "final_f".to_string());
 
@@ -515,7 +512,7 @@ fn main() {
         ),
     };
 
-    // let  = make_verification_circuit(&mut builder);
+    // let res = make_verification_circuit(&mut builder);
 
     let proof_target = ProofTarget {
         a: G1Target::constant(&mut builder, proof.a),
@@ -528,35 +525,144 @@ fn main() {
     // let input_target = 
 
 
-    let input   = vec![20]; 
-    let res = verify::<F, D>(input, proof);
-    println!("Is the proof correct? = {:?}", res);
+    // let input   = vec![20]; 
+    // let res = verify::<F, D>(input, proof);
+    // println!("Is the proof correct? = {:?}", res);
 
-    let rng = &mut rand::thread_rng();
-    let p = G1Affine::rand(rng);
-    let q = G2Affine::rand(rng);
-    let r_expected = miller_loop_native(&q, &p);
+    // let rng = &mut rand::thread_rng();
+    // let p = G1Affine::rand(rng);
+    // let q = G2Affine::rand(rng);
+    // let r_expected = miller_loop_native(&q, &p);
+
+
     // let output = pairing(p, q);
-
+    // ! started building circuit
     let config = CircuitConfig::standard_ecc_config();
     let mut builder = CircuitBuilder::<F, D>::new(config);
-    let p_t = G1Target::constant(&mut builder, p);
-    let q_t = G2Target::constant(&mut builder, q);
-    // let f_t = miller_loop_circuit(&mut builder, &q_t, &p_t);
-    // let output_t = pairing_circuit::<F, C, D>(&mut builder, p_t, q_t);
 
-    let r_t = miller_loop_circuit(&mut builder, &q_t, &p_t);
-    let r_expected_t = Fq12Target::constant(&mut builder, r_expected.into());
+    let num_inputs = 1; // ! this will be passed
+    // let inputs_builder = 
+    // let num_inputs = FqTarget::empty(&mut builder);
+    let vk_alpha1 = G1Target::empty(&mut builder);
+    let vk_beta2 = G2Target::empty(&mut builder);
+    let vk_gamma2 = G2Target::empty(&mut builder);
+    let vk_delta2 = G2Target::empty(&mut builder);
+    let vk_ic = (0..num_inputs + 1).map(|_| G1Target::empty(&mut builder)).collect_vec();
 
-    // Fq12Target::connect(&mut builder, &r_t, &r_expected_t);
+    let input_target = (0..num_inputs).map(|_| FqTarget::empty(&mut builder)).collect_vec();
+    
+    let proof_a = G1Target::empty(&mut builder);
+    let proof_b = G2Target::empty(&mut builder);
+    let proof_c = G1Target::empty(&mut builder);
 
-    let pw = PartialWitness::<F>::new();
+    let vk_x = vk_ic[0].clone();
+    // vk.ic.length would be 2
+
+    for i in 0..num_inputs {
+        // vk_x = vk_x.add(vk_ic[i+1].mul_bigint(&[input[i];1])).into_affine();
+        let (x, y) = (vk_ic[i+1].x.clone(), vk_ic[i+1].y.clone());
+        let (x_ic_mul_input) = x.mul(&mut builder, &input_target[i]);
+        let (y_ic_mul_input) = y.mul(&mut builder, &input_target[i]);
+        let (x_ic_mul_input_plus_x) = x_ic_mul_input.add(&mut builder, &vk_ic[i].x);
+        let (y_ic_mul_input_plus_y) = y_ic_mul_input.add(&mut builder, &vk_ic[i].y);
+        let temp_affine = G1Target::new(x_ic_mul_input_plus_x, y_ic_mul_input_plus_y);
+        vk_x.add(&mut builder, &temp_affine);
+    }
+
+    let neg_a = proof_a.neg(&mut builder);
+    let mut res1 = pairing_circuit::<F, C, D>(&mut builder, neg_a, proof_b.clone());
+    let mut res2 = pairing_circuit::<F, C, D>(&mut builder, vk_alpha1.clone(), vk_beta2.clone());
+    let res3 = pairing_circuit::<F, C, D>(&mut builder, vk_x, vk_gamma2.clone());
+    let res4 = pairing_circuit::<F, C, D>(&mut builder, proof_c.clone(), vk_delta2.clone());
+
+    let res1_res2 = res1.mul(&mut builder, &res2);
+    let res3_res4 = res3.mul(&mut builder, &res4);
+    let res = res1_res2.mul(&mut builder, &res3_res4);
+    let res_expected = Fq12Target::constant(&mut builder, Fq12::one());
+
+    let vk = get_verification_key();
+
+    println!("loaded verification key");
+    let mut pw = PartialWitness::<F>::new();
+    let (vk_alpha_x, vk_alpha_y) = vk.alpha1.xy().unwrap();
+    let (vk_beta2_x, vk_beta2_y) = vk.beta2.xy().unwrap();
+    let (vk_gamma_x, vk_gamma_y) = vk.gamma2.xy().unwrap();
+    let (vk_delta2_x, vk_delta2_y) = vk.delta2.xy().unwrap();
+    // let vk_ic_0 = vk.ic.xy().unwrap();
+    let (vk_ic_0_x, vk_ic_0_y) = vk.ic[0].xy().unwrap();
+    let (vk_ic_1_x, vk_ic_1_y) = vk.ic[1].xy().unwrap();
+
+    vk_alpha1.x.set_witness(&mut pw, vk_alpha_x);
+    vk_alpha1.y.set_witness(&mut pw, vk_alpha_y);
+
+    vk_beta2.x.set_witness(&mut pw, vk_beta2_x);
+    vk_beta2.y.set_witness(&mut pw, vk_beta2_y);
+
+    vk_gamma2.x.set_witness(&mut pw, vk_gamma_x);
+    vk_gamma2.y.set_witness(&mut pw, vk_gamma_y);
+
+    vk_delta2.x.set_witness(&mut pw, vk_delta2_x);
+    vk_delta2.y.set_witness(&mut pw, vk_delta2_y);
+
+    vk_ic[0].x.set_witness(&mut pw, vk_ic_0_x);
+    vk_ic[0].y.set_witness(&mut pw, vk_ic_0_y);
+    vk_ic[1].x.set_witness(&mut pw, vk_ic_1_x);
+    vk_ic[1].y.set_witness(&mut pw, vk_ic_1_y);
+
+    let (proof_a_x, proof_a_y) = proof.a.xy().unwrap();
+    let (proof_b_x, proof_b_y) = proof.b.xy().unwrap();
+    let (proof_c_x, proof_c_y) = proof.c.xy().unwrap();
+    // let vk_ic = (0..num_inputs).map(|_| G1Target::empty(&mut builder)).collect_vec();
+    proof_a.x.set_witness(&mut pw, proof_a_x);
+    proof_a.y.set_witness(&mut pw, proof_a_y);
+    proof_b.x.set_witness(&mut pw, proof_b_x);
+    proof_b.y.set_witness(&mut pw, proof_b_y);
+    proof_c.x.set_witness(&mut pw, proof_c_x);
+    proof_c.y.set_witness(&mut pw, proof_c_y);
+
+    // num_inputs = 0;
+    input_target[0].set_witness(&mut pw, &Fq::from(20u64));
+
     let data = builder.build::<C>();
-    dbg!(data.common.degree_bits());
+    // dbg!(data.common.degree_bits());
     let _proof = data.prove(pw).unwrap();
     println!("proof generated");
     println!("{}",_proof.clone().to_bytes().len());
+
+
+
+    // let mut vk_x = vk.ic[0];
+
+    // let input = vec![20];
+
+    // for i in 0..input.len() {
+    //     vk_x = vk_x.add(vk.ic[i+1].mul_bigint(&[input[i];1])).into_affine();
+    // }   
+
+    // //TODO negate check
+    // pairing_prod(proof.a.into_group().neg().into_affine(), proof.b, vk.alpha1, vk.beta2, vk_x, vk.gamma2, proof.c, vk.delta2)
+
+    
+
+    // let res = make_verification_circuit::<F, C, D>(&mut builder, vec![20], 20);
+    // let p_t = G1Target::constant(&mut builder, p);
+    // let q_t = G2Target::constant(&mut builder, q);
+    
+    // let f_t = miller_loop_circuit(&mut builder, &q_t, &p_t);
+    // let output_t = pairing_circuit::<F, C, D>(&mut builder, p_t, q_t);
+
+    // // let r_t = miller_loop_circuit(&mut builder, &q_t, &p_t);
+    // let r_expected_t = Fq12Target::constant(&mut builder, r_expected.into());
+
+    // // Fq12Target::connect(&mut builder, &r_t, &r_expected_t);
+
+    // let pw = PartialWitness::<F>::new();
+    // let data = builder.build::<C>();
+    // dbg!(data.common.degree_bits());
     // let _proof = data.prove(pw).unwrap();
+    // println!("proof generated");
+    // println!("{}",_proof.clone().to_bytes().len());
+    // // let _proof = data.prove(pw).unwrap();
 
     // let res1 = data.verify(_proof);
 
@@ -570,7 +676,7 @@ fn make_verification_circuit<
     builder: &mut CircuitBuilder<F, D>,
     input: Vec<u64>,
     num_inputs: usize,
-) 
+) -> Fq12Target<F, D>
 where
     <C as GenericConfig<D>>::Hasher: AlgebraicHasher<F>,
 {
@@ -609,8 +715,8 @@ where
     let res1_res2 = res1.mul(builder, &res2);
     let res3_res4 = res3.mul(builder, &res4);
     let res = res1_res2.mul(builder, &res3_res4);
-
-    let one = Fq12Target::constant(builder, Fq12::one());
+    res
+    // let one = Fq12Target::constant(builder, Fq12::one());
 }
 
 

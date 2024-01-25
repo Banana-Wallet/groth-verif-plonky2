@@ -300,7 +300,7 @@ fn miller_loop_BN<F: RichField + Extendable<D>, const D: usize>(
     let mut f = Fq12Target {
         coeffs: f_coeffs.try_into().unwrap(),
     };
-    i = 1;
+
     loop {
         print_fq_target(builder, &f.coeffs[0], "final_f".to_string());
 

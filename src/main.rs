@@ -318,6 +318,13 @@ fn main() {
         vk_x = vk_x.add(&mut builder, &twentith_vk_1_affine);
     }
     let neg_a = proof_a.neg(&mut builder);
+    let res1 = pairing_circuit::<F, C, D>(&mut builder, neg_a, proof_b.clone());
+    let res2 = pairing_circuit::<F, C, D>(&mut builder, vk_alpha1.clone(), vk_beta2.clone());
+    let res3 = pairing_circuit::<F, C, D>(&mut builder, vk_x, vk_gamma2.clone());
+    let res4 = pairing_circuit::<F, C, D>(&mut builder, proof_c.clone(), vk_delta2.clone());
+    let res1_res2 = res1.mul(&mut builder, &res2);
+    let res3_res4 = res3.mul(&mut builder, &res4);
+    let res = res1_res2.mul(&mut builder, &res3_res4);
 
     println!("Completed constraint defination circuit #1");
 
